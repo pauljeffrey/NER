@@ -76,11 +76,7 @@ def tokenize_adjust_labels(all_samples_per_split):
         adjusted_label_ids.append(existing_label_ids[i])
         prev_wid = wid
       else:
-        # print(existing_label_ids)
-        # print(existing_label_ids[i])
-        # print(type(existing_label_ids[i]))
-        # print(label_names[existing_label_ids[i]])
-        #label_name = label_names[existing_label_ids[i]]
+        
         adjusted_label_ids.append(existing_label_ids[i])
         
     total_adjusted_labels.append(adjusted_label_ids)
@@ -90,17 +86,23 @@ def tokenize_adjust_labels(all_samples_per_split):
 
 
 def join_words_tags(wp):
+    """
+        Function aggregates words together based on the predicted tags.
+    """
     subword =False
+    # Create a temporary empty list to store words, predictions, scores.
     temp_word = []
     temp_pred = []
     temp_score = []
     
+    # Create lists to store eventual processsed words, tags and corresponding probability score.
     input_words = []
     tags = []
     prob_scores = []
 
     tag_processed = [False for i in range(len(wp["ner"]))]
     
+    # Iterate through each words in the list
     for ind,(word, tag, score) in enumerate(zip(wp["words"],wp["ner"], wp["prob. score"])):
         if not tag_processed[ind] and tag.startswith("B-"):
           
@@ -158,7 +160,6 @@ def join_words_tags(wp):
             
 
     return {"ner": tags, "words": input_words, 'prob. score': prob_scores}
-
 
 
 def aggregate(words,predictions,prob_score,use_max= True):
@@ -233,119 +234,148 @@ def aggregate(words,predictions,prob_score,use_max= True):
 
 
 def load_model_tokenizer(path, num_labels):
+    # Load trained model and tokenizer
     tokenizer =  AutoTokenizer.from_pretrained(path)
     model =  AutoModelForTokenClassification.from_pretrained(path, num_labels=num_labels)
     return model , tokenizer
 
 
-
 def get_response(model, tokenizer, query, parquet_path ,focus=None, threshold=0.1, use_max=False):
+    """
+        Retrieves drug information from parquet database using the model's predicted output.
+    """
+    # Tokenize query
     tokens = tokenizer(query)      
-    predictions = model.forward(input_ids=torch.tensor(tokens['input_ids']).unsqueeze(0), attention_mask=torch.tensor(tokens['attention_mask']).unsqueeze(0))
-
-    prob_score = list(torch.max(predictions.logits.squeeze(), axis=1).values.detach().numpy())
+    # Fetch predictions. Shape == (1, n_subwords, len(label_names))
+    predictions = model.forward(input_ids=torch.tensor(tokens['input_ids']).unsqueeze(0),
+                    attention_mask=torch.tensor(tokens['attention_mask']).unsqueeze(0))
+    # Get the probability score for each predictions
+    prob_score = list(torch.max(torch.softmax(predictions.logits, axis=-1).squeeze(),
+                                axis=1).values.detach().numpy())
+    #Get the maximum predicted values from these predictions.
+    # Shape = (1, n_subwords, 1)
     predictions = torch.argmax(predictions.logits.squeeze(), axis=1)
 
-
+    # Get tokens ids
     input_ids = torch.tensor(tokens["input_ids"])
 #     pred_for_word = [label_names[i] for i in predictions]
 #     each_word = tokenizer.batch_decode(input_ids)
-        
+    # Post process the generated outputs and their input_ids using the tokenizer.    
     words_prediction = post_process(tokenizer , input_ids, predictions, prob_score, use_max)
     
+    # Retrieve results from the parquet database using predicted entity tags.
     results = retrieve_results(words_prediction,parquet_path, focus, threshold=threshold)
     
     return results #words_prediction #
 
-
-
 def post_process(tokenizer, input_ids, pred, prob_score,use_max=False):
-  
+    
+    """
+        This function aggregates the word ids and corresponding tags into full words and then into 
+        compound words if necessary based on the generated entity tag.
+    """
+    # Change all generated label to theirtags (e.g 1  -> "B-DRUG")
     pred_for_word = [label_names[i] for i in pred]
+    # Tokenize input ids to words (e.g 1 -> "##xy")
     each_word = tokenizer.batch_decode(input_ids)
+    # Aggregate subwords into full words and then into compound words based on tag predictions.
     words_tags = aggregate(each_word, pred_for_word, prob_score, use_max)
         
     return words_tags
 
-
-
 def retrieve_results(words_prediction,path, focus=None,threshold=0.7):
+    """
+        Function retrieves results from the parquet database and provide the results.
+    
+    """
+    #  Create result object
     results = {"results": []}
+    # create list to store extracted drug names
     drugs = []    
+    # Create list to store extracted attributes
     if not focus:
         focus = []
-        
+     
+   # Loop through each word and corresponding predicted tags 
     for each_word, pred, score in zip(words_prediction['words'], words_prediction["ner"], words_prediction["prob. score"]):
-        print(each_word, "\t"+ pred , "\t" + str(score))
+        # if the model's predicted tag is in the drug_category append to the drug list
         if pred in DRUG_CATEGORY and score >= threshold:
-            drugs.append(each_word)            
+            drugs.append(each_word)   
+        # Else append to features / attribute list
         elif pred in INFORMATION_CATEGORY and score >= threshold:
-            
             feat = TAGS_TO_FEATURES[pred]
             
             if type(feat)== list:
                 focus.extend(feat)
             else:
-                focus.append(feat)            
+                focus.append(feat)   
+        # If the model does not predict a drugname or drug feature for a particular word, ignore it.
         else:
             continue
             
     drugs = set(drugs)
     focus = set(focus)
    
-    # if drug list is empty, return an empty dictionary
     
+    # if drug list is empty, return an empty dictionary
     if len(drugs) == 0:
         return {"results": None}
         
-#     elif len(drugs) > 1 and len(focus) == 0:
-#         return {"results" : None}
 
-#     elif len(drugs) == 0 and len(focus) > 0:
-#         return {"results" : None}
     # Open database:
     db = pd.read_parquet(path)
-    
-    
+
     # Iterate through each found drug.
     for drug in drugs:
+        drug = drug.lower()
         drug_info_found = False
-        if drug in db.index:
-            drug_info, drug_info_found = get_values(df, drug, focus)        
-            #results["results"].append(drug_info)        
-        if drug in db["generic_name"] and not drug_info_found:
-            drug_info, drug_info_found = get_values(df.set_index("generic_name"), drug, focus)
+        # if the drug is in the index
+        if drug in [each.lower() for each in db.index]:
+            # Get drug info
+            drug_info, drug_info_found = get_values(db, drug, focus) 
+            #print(drug_info)
+            #results["results"].append(drug_info)    
+            
+        # if drug is in the "generic_name"
+        if drug in db["generic_name"] and (not drug_info_found):
+            drug_info, drug_info_found = get_values(db.set_index("generic_name"), drug, focus)
             #results["results"].append(drug_info) 
-        if drug in db["brand_names"] and not drug_info_found:
-            drug_info, drug_info_found = get_values(df.set_index("brand_name"), drug, focus)
+        # If drug is in the "brand_name"
+        if drug in  db["brand_names"] and (not drug_info_found):
+            drug_info, drug_info_found = get_values(db.set_index("brand_name"), drug, focus)
             #results["results"].append(drug_info) 
-        if drug in db["related_drugs"] and not drug_info_found:
-            drug_info, drug_info_found = get_values(df.set_index("related_drugs"), drug, focus)
+        # If drug is in the "related_drugs" category
+        if drug in db["related_drugs"] and (not drug_info_found):
+            drug_info, drug_info_found = get_values(db.set_index("related_drugs"), drug, focus)
             #results["results"].append(drug_info) 
         
+    
+        # If no drug was found at all then return None for all extracted feature attribute.
         if not drug_info_found and len(focus) > 0:
             drug_info = {"drug_name": drug}            
             for feature in set(focus):
                 drug_info[feature] = None
-        else:
-            drug_info = {"drug_name": drug}
-            for feature in df.columns:
-                drug_info[feature] = None
+#         else:
+#             drug_info = {"drug_name": drug}
+#             for feature in df.columns:
+#                 drug_info[feature] = None
                 
         results["results"].append(drug_info)
 
     return results
         
         
-        
-        
-def get_values(df,drug,focus):
+def get_values(df,drug,features):
+    """
+        This function gets feature values of the queried drug.
+    """
     drug_info = {"drug_name": drug}
     #features = set(features)      
     
     if len(features) > 0:
-        for feature in focus:
-            if feature in db.columns:
+        for feature in features:
+            # Check if focus feature is in the database column
+            if feature in df.columns:
                 if feature == "generic_name":
                     drug_info[feature] = df.loc[drug, feature].split(",")[0]        
                 elif feature == 'CSA':
@@ -355,7 +385,7 @@ def get_values(df,drug,focus):
                 else:
                     drug_info[feature] = df.loc[drug, feature].split(',')
 
-       
+    # Else just return all the attributes of the index drug
     else:
         for feature in db.columns:
             if feature == "generic_name":

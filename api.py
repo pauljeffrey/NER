@@ -14,6 +14,13 @@ app = FastAPI()
 
 
 class Request(BaseModel):
+    """
+        Class handles the structure of the user's query.
+        query: user's query
+        focus: Particular drug attributes to check for
+        threshold: float number that determines whether to ignore predictions of model based on probability score
+        
+    """
     query: str
     focus: Optional[Union[list, str]] = None
     threshold: Optional[float] = 0.7
@@ -31,6 +38,9 @@ def fetch_predictions(request_query: Request):
     threshold = request_query.threshold
     use_max = request_query.use_max
     
+    if threshold > 1:
+        threshold = 0.7
+        
     results = get_response(model, tokenizer, query, PARQUET_PATH ,focus=focus, threshold=threshold, use_max= use_max)
     
     return results
