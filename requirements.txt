@@ -18,8 +18,8 @@ huggingface-hub==0.14.1
 idna==3.4
 importlib-metadata==6.6.0
 importlib-resources==5.12.0
-jax==0.4.11
-jaxlib==0.4.11
+jax==0.3.25
+jaxlib==0.3.25
 Jinja2==3.1.2
 lit==16.0.5
 markdown-it-py==2.2.0
