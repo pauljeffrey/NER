@@ -2,7 +2,8 @@ import transformers
 import pandas as pd
 import numpy as np
 import torch
-from transformers import AutoModelForTokenClassification, DataCollatorForTokenClassification
+from zipfile import ZipFile
+from transformers import AutoModelForTokenClassification, DataCollatorForTokenClassification, AutoTokenizer
 
 from typing import Optional, Union
 from fastapi import FastAPI
@@ -31,15 +32,18 @@ class Request(BaseModel):
 model, tokenizer = load_model_tokenizer(MODEL_PATH, len(label_names))
 
 
-@app.post("/results")
-def fetch_predictions(request_query: Request):
+@app.post("/")
+async def fetch_predictions(request_query: Request):
     query = request_query.query
     focus = request_query.focus
     threshold = request_query.threshold
     use_max = request_query.use_max
     
-    if threshold > 1:
-        threshold = 0.7
+    if type(focus) == str:
+        focus = [focus]
+        
+    if threshold > 1 :
+        threshold = 0.65
         
     results = get_response(model, tokenizer, query, PARQUET_PATH ,focus=focus, threshold=threshold, use_max= use_max)
     
