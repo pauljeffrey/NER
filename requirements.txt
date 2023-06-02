@@ -11,7 +11,7 @@ exceptiongroup==1.1.1
 fastapi==0.95.2
 filelock==3.12.0
 flax==0.6.10
-fsspec==2023.5.0
+fsspec==2023.1.0
 gunicorn==20.1.0
 h11==0.14.0
 huggingface-hub==0.14.1
