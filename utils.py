@@ -50,7 +50,7 @@ label_names = ['I-GENERICNAME',
  'B-CLASS']
 
 
-MODEL_PATH = "finetuned_NER"
+MODEL_PATH = "BeardedMonster/Distill-NER"
 PARQUET_PATH = "./drugs_info.parquet"
 N_VALUES = 6
 
